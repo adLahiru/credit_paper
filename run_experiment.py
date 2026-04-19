@@ -14,11 +14,16 @@ os.environ['MKL_NUM_THREADS'] = '1'
 import time
 import json
 import warnings
-import urllib.request
+import datetime
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+
+def log(msg):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
 
 from sklearn.model_selection import (StratifiedKFold, train_test_split,
                                      cross_val_score, GridSearchCV)
@@ -55,8 +60,6 @@ FIGURES_DIR.mkdir(exist_ok=True)
 # 1. DATA LOADING  (UCI Statlog German Credit Data)
 # ======================================================================
 
-GERMAN_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/statlog/german/german.data"
-
 COLUMNS = [
     'checking_status',       # A11..A14 qualitative
     'duration_months',       # numeric
@@ -87,22 +90,23 @@ CATEGORICAL_COLS = [c for c in COLUMNS if c not in NUMERIC_COLS and c != 'target
 
 
 def load_german_credit():
-    """Download + parse German Credit dataset from UCI."""
-    cache = Path("data/german.data")
-    cache.parent.mkdir(exist_ok=True)
-    if not cache.exists():
-        print("Downloading German Credit dataset from UCI...")
-        try:
-            urllib.request.urlretrieve(GERMAN_URL, cache)
-        except Exception as e:
-            print(f"  Direct UCI fetch failed ({e}); trying mirror...")
-            # Mirror on github
-            mirror = "https://raw.githubusercontent.com/uci-ml-repo/statlog-german-credit/main/german.data"
-            try:
-                urllib.request.urlretrieve(mirror, cache)
-            except Exception as e2:
-                raise RuntimeError(f"Could not download dataset. Check internet. {e2}")
-    df = pd.read_csv(cache, sep=r'\s+', header=None, names=COLUMNS)
+    """Load German Credit dataset via the official ucimlrepo package."""
+    from ucimlrepo import fetch_ucirepo
+    log("Fetching German Credit (id=144) via ucimlrepo...")
+    ds = fetch_ucirepo(id=144)
+    X = ds.data.features.copy()
+    y = ds.data.targets.copy()
+
+    # ucimlrepo returns 20 feature columns in UCI's documented order.
+    # Rename positionally to the schema the rest of the pipeline expects.
+    assert X.shape[1] == 20, f"Expected 20 features, got {X.shape[1]}"
+    feature_names = COLUMNS[:-1]  # all COLUMNS except 'target'
+    X.columns = feature_names
+
+    assert y.shape[1] == 1, f"Expected 1 target column, got {y.shape[1]}"
+    df = X.copy()
+    df['target'] = y.iloc[:, 0].values
+
     # Recode target: 1 (good) -> 0, 2 (bad) -> 1 (so "bad credit" is the positive class)
     df['target'] = (df['target'] == 2).astype(int)
     # Extract gender from personal_status_sex (A91,A93,A94 = male; A92,A95 = female)
@@ -110,9 +114,9 @@ def load_german_credit():
         'A91': 'male', 'A92': 'female', 'A93': 'male',
         'A94': 'male', 'A95': 'female'
     })
-    print(f"  Loaded: {df.shape[0]} rows, {df.shape[1]-1} features")
-    print(f"  Class balance: good={((df.target==0).sum())}, bad={((df.target==1).sum())}")
-    print(f"  Gender: male={((df.gender=='male').sum())}, female={((df.gender=='female').sum())}")
+    log(f"Loaded: {df.shape[0]} rows, {df.shape[1]-2} features")
+    log(f"Class balance: good={((df.target==0).sum())}, bad={((df.target==1).sum())}")
+    log(f"Gender: male={((df.gender=='male').sum())}, female={((df.gender=='female').sum())}")
     return df
 
 
@@ -236,9 +240,9 @@ def disparate_impact_ratio(y_pred, group):
 # ======================================================================
 
 def main():
-    print("=" * 70)
-    print("German Credit Risk: Accuracy-Fairness-Interpretability Analysis")
-    print("=" * 70)
+    log("=" * 70)
+    log("German Credit Risk: Accuracy-Fairness-Interpretability Analysis")
+    log("=" * 70)
 
     df = load_german_credit()
 
@@ -267,9 +271,11 @@ def main():
     all_preds = {}
     all_probs = {}
 
-    print(f"\n=== Tuning & evaluating {len(classifiers)} classifiers ===")
-    for name, (clf, grid) in classifiers.items():
-        print(f"\n[{name}]")
+    total = len(classifiers)
+    log(f"=== Tuning & evaluating {total} classifiers ===")
+    for idx, (name, (clf, grid)) in enumerate(classifiers.items(), 1):
+        n_combos = int(np.prod([len(v) for v in grid.values()]))
+        log(f"[{idx}/{total}] {name} — fitting grid ({n_combos} combos x 5 folds = {n_combos*5} fits)")
         t0 = time.perf_counter()
 
         pipeline = Pipeline([
@@ -277,7 +283,7 @@ def main():
             ('clf', clf),
         ])
         search = GridSearchCV(pipeline, grid, cv=cv, scoring='roc_auc',
-                              n_jobs=-1, refit=True)
+                              n_jobs=-1, refit=True, verbose=1)
         search.fit(X_train, y_train)
         train_time = time.perf_counter() - t0
 
@@ -300,9 +306,9 @@ def main():
         eo_diff = equal_opportunity_difference(y_test, y_pred, g_test)
         di_ratio = disparate_impact_ratio(y_pred, g_test)
 
-        print(f"  acc={acc:.4f}  AUC={auc:.4f}  F1={f1:.4f}  cost={cost}  "
-              f"DP_diff={dp_diff:+.3f}  EO_diff={eo_diff:+.3f}  DI={di_ratio:.3f}  "
-              f"train={train_time:.1f}s")
+        log(f"  -> {name}: acc={acc:.4f}  AUC={auc:.4f}  F1={f1:.4f}  cost={cost}  "
+            f"DP_diff={dp_diff:+.3f}  EO_diff={eo_diff:+.3f}  DI={di_ratio:.3f}  "
+            f"train={train_time:.1f}s")
 
         results.append({
             'classifier': name,
@@ -320,7 +326,7 @@ def main():
     df_res.to_csv(RESULTS_DIR / "main_results.csv", index=False)
 
     # ------------------ Interpretability: feature importance ------------------
-    print("\n=== Feature Importance (Random Forest) ===")
+    log("=== Feature Importance (Random Forest) ===")
     rf_pipe = Pipeline([('prep', make_preprocessor()),
                         ('clf', RandomForestClassifier(n_estimators=300, max_depth=10,
                                                        random_state=RNG, n_jobs=-1))])
@@ -335,7 +341,7 @@ def main():
     print(fi.head(10).to_string(index=False))
 
     # ------------------ Interpretability: logistic regression coefficients ------------------
-    print("\n=== Logistic Regression Coefficients (interpretable model) ===")
+    log("=== Logistic Regression Coefficients (interpretable model) ===")
     lr_pipe = Pipeline([('prep', make_preprocessor()),
                         ('clf', LogisticRegression(max_iter=2000, C=1.0,
                                                    class_weight='balanced', random_state=RNG))])
@@ -350,7 +356,7 @@ def main():
     # ------------------ Fairness deep-dive for best AUC model ------------------
     best_name = df_res.iloc[0]['classifier']
     best_pred = all_preds[best_name]
-    print(f"\n=== Fairness deep-dive for best model: {best_name} ===")
+    log(f"=== Fairness deep-dive for best model: {best_name} ===")
     male_mask = g_test == 'male'
     female_mask = g_test == 'female'
     fairness_detail = {
@@ -371,7 +377,7 @@ def main():
     # ==================================================================
     # FIGURES
     # ==================================================================
-    print("\n=== Generating figures ===")
+    log("=== Generating figures ===")
     plt.rcParams.update({'font.size': 10, 'savefig.bbox': 'tight', 'savefig.dpi': 300})
 
     # Figure 1: Model comparison bar chart (Accuracy, AUC, F1)
@@ -510,14 +516,14 @@ def main():
     # ==================================================================
     # HEADLINE OUTPUT
     # ==================================================================
-    print("\n" + "=" * 70)
-    print("HEADLINE NUMBERS")
-    print("=" * 70)
-    print(f"Majority baseline:     {baseline_acc:.4f} accuracy")
-    print(f"Best AUC model:        {best_row['classifier']:15s} AUC={best_row['auc']:.4f} acc={best_row['accuracy']:.4f}")
-    print(f"Best cost-sensitive:   {best_cost_row['classifier']:15s} cost={best_cost_row['cost_matrix_score']}")
-    print(f"Fairest model:         {fairest_row['classifier']:15s} |DP diff|={abs(fairest_row['demographic_parity_diff']):.3f}")
-    print(f"\nResults in: results/       Figures in: figures/")
+    log("=" * 70)
+    log("HEADLINE NUMBERS")
+    log("=" * 70)
+    log(f"Majority baseline:     {baseline_acc:.4f} accuracy")
+    log(f"Best AUC model:        {best_row['classifier']:15s} AUC={best_row['auc']:.4f} acc={best_row['accuracy']:.4f}")
+    log(f"Best cost-sensitive:   {best_cost_row['classifier']:15s} cost={best_cost_row['cost_matrix_score']}")
+    log(f"Fairest model:         {fairest_row['classifier']:15s} |DP diff|={abs(fairest_row['demographic_parity_diff']):.3f}")
+    log("Results in: results/       Figures in: figures/")
 
 
 if __name__ == "__main__":
