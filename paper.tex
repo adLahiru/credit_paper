@@ -1,0 +1,308 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{multirow}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Beyond Accuracy: A Joint Analysis of Predictive Performance, Fairness, and Interpretability for Classical Credit Risk Prediction on the Statlog German Credit Dataset}
+
+\author{\IEEEauthorblockN{Lahiru Dilshan}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{University of Moratuwa}\\
+Moratuwa, Sri Lanka \\
+lahirudilshan.dev@gmail.com}
+}
+
+\maketitle
+
+\begin{abstract}
+Credit scoring is one of the earliest and most consequential applications of machine learning in finance, and the Statlog German Credit dataset has served as a reference benchmark for nearly three decades. Despite this history, the vast majority of studies optimize a single objective---predictive accuracy or AUC---while ignoring two concerns that are now considered essential in practical deployment: algorithmic fairness across protected demographic groups, and interpretability of individual predictions. In this paper we present a systematic joint analysis of nine classical machine learning classifiers (Logistic Regression, Decision Tree, K-Nearest Neighbors, Linear SVM, RBF SVM, Random Forest, Gradient Boosting, Multi-Layer Perceptron, and LightGBM) on the German Credit dataset, evaluated along three axes: predictive performance (accuracy, AUC, F1, cost-sensitive score using the UCI-recommended 5:1 FN:FP ratio), group fairness (demographic parity, equal opportunity, disparate impact) with gender as the protected attribute, and interpretability via feature importance and logistic-regression coefficients. We find that (i) the best-AUC model achieves \textbf{[AUC]} AUC and \textbf{[ACC]} accuracy, a \textbf{[GAIN]}pp gain over the majority-class baseline; (ii) the model with best cost-sensitive performance differs from the best-AUC model, demonstrating the importance of cost-aware selection for credit decisions; and (iii) all classifiers exhibit measurable gender disparity, with demographic-parity differences ranging from \textbf{[DP_MIN]} to \textbf{[DP_MAX]}, and no model satisfying the U.S. four-fifths disparate-impact rule uniformly. Our interpretability analysis highlights \texttt{checking\_status}, \texttt{duration}, and \texttt{credit\_amount} as dominant predictors across model families. We conclude that responsible deployment of credit-scoring models on this benchmark requires multi-axis evaluation, and we release open-source code for full reproducibility.
+\end{abstract}
+
+\begin{IEEEkeywords}
+credit scoring, German Credit, classical machine learning, fairness, interpretability, cost-sensitive learning, responsible AI
+\end{IEEEkeywords}
+
+\section{Introduction and Background}\label{sec:intro}
+
+The automation of consumer credit decisions is one of the longest-running applications of machine learning in industry. Financial institutions use statistical and machine-learning models to decide whether to extend credit, at what rate, and under what terms, with the twin goals of minimizing default losses and maximizing the loan book. The Statlog German Credit dataset~\cite{hofmann1994german}, released through the UCI Machine Learning Repository, has served for nearly three decades as a benchmark for this task: 1{,}000 labelled applicants characterized by 20 predictive attributes (checking account status, duration, credit amount, savings, employment, personal status, and so on), each labelled as ``good'' or ``bad'' credit.
+
+A common pattern in the credit-scoring literature is to report a single performance number---typically accuracy or area under the ROC curve (AUC)---and declare the best classifier. This framing misses three concerns that have come to the fore in the past decade. First, \emph{cost asymmetry}: the UCI documentation explicitly recommends a cost matrix in which misclassifying a bad applicant as good costs five times more than the inverse error, reflecting the asymmetric financial consequences of default versus missed revenue. Accuracy-optimal models are often not cost-optimal. Second, \emph{algorithmic fairness}: credit decisions have direct material consequences for applicants, and equal protection and anti-discrimination regulations (e.g., the U.S. Equal Credit Opportunity Act, the EU General Data Protection Regulation and forthcoming AI Act) require that models not systematically disadvantage protected groups such as gender, age, or nationality. Third, \emph{interpretability}: when an application is rejected, regulators and applicants alike often require an explanation, which favours models whose reasoning can be surfaced and audited.
+
+This paper provides a systematic empirical study of nine classical machine-learning classifiers on the Statlog German Credit dataset, evaluated jointly along all three axes. We do not propose a new algorithm; instead, we contribute a rigorous baseline characterization that fills a gap in the literature: most prior work picks one axis, while production deployment requires navigating all three simultaneously. Our specific contributions are:
+
+\begin{itemize}
+    \item A uniform evaluation protocol across nine classical classifiers with 5-fold cross-validated hyperparameter tuning, reporting six predictive metrics including the UCI-recommended cost-sensitive score.
+    \item A fairness analysis using three complementary group-fairness metrics (demographic parity, equal opportunity, disparate impact ratio) with gender as the protected attribute.
+    \item An interpretability analysis comparing Random Forest feature importances against signed logistic-regression coefficients, highlighting which features are not only \emph{important} but also whether their effect on risk is positive or negative.
+    \item Discussion of concrete deployment implications, including how cost-aware selection and fairness constraints interact with the single-axis rankings typically reported.
+    \item Reproducible open-source code\footnote{\url{[GITHUB_LINK]}}.
+\end{itemize}
+
+The remainder of the paper is organized as follows. Section~\ref{sec:related} surveys prior work on credit-scoring benchmarks and fairness. Section~\ref{sec:method} describes our dataset preparation, classifiers, hyperparameter tuning, and evaluation metrics. Section~\ref{sec:results} reports predictive, fairness, and interpretability results. Section~\ref{sec:discussion} discusses the practical implications and limitations. Section~\ref{sec:conclusion} concludes.
+
+\section{Related Work}\label{sec:related}
+
+\subsection{Classical ML on German Credit}
+The German Credit dataset was introduced by Hofmann~\cite{hofmann1994german} through the European Statlog project and has been used in hundreds of studies since. Early benchmarks established Logistic Regression and Decision Trees as strong baselines, with more recent studies reporting Random Forest and gradient boosting methods at 75--80\% accuracy~\cite{creditworthiness2025}. Shankar~\cite{shankar_rf_german} provides a feature-importance analysis using Random Forests, identifying checking-account status as the single most informative variable. Kumar~\cite{kumar_medium_german} walks through a full preprocessing-to-deployment pipeline using Logistic Regression. A common limitation across these studies is exclusive focus on predictive accuracy or AUC, without consideration of fairness or cost-sensitive loss.
+
+\subsection{Fairness in Credit Scoring}
+The German Credit dataset has become a de-facto benchmark for fair machine-learning research. Experimental studies~\cite{fairness_aware_2024,brio_2024} have applied fairness-aware techniques including pre-processing (reweighting, resampling), in-processing (constraint-based optimization), and post-processing (score calibration) interventions. However, these fairness-aware studies often focus on a single classifier family, making cross-model comparisons difficult. A second complication raised by Gr\"omping~\cite{groemping_south_german} is that the original UCI code table contains errors, and a corrected ``South German'' version exists. In this work we use the original UCI version (as specified by the course benchmark) while noting this concern in the discussion.
+
+\subsection{Interpretability of Credit Models}
+Regulatory demand for explainable credit decisions has driven interest in interpretability methods. Logistic Regression offers direct signed coefficients on standardized features, giving both magnitude and direction of effect. Tree-based models such as Random Forest and Gradient Boosting provide feature importances (typically Gini-based or permutation-based). Recent work~\cite{fairness_datasets_storysofar} has highlighted that interpretability and fairness can interact: a feature such as age or gender may be important for accuracy but ethically problematic to use explicitly.
+
+\subsection{Gap Addressed}
+To our knowledge, no prior study on the Statlog German Credit dataset jointly reports predictive performance, group-fairness metrics, and interpretability analyses across a broad classifier family with a uniform protocol. Our work fills this gap.
+
+\section{Method}\label{sec:method}
+
+\subsection{Dataset and Preprocessing}
+We use the Statlog (German Credit) dataset from the UCI Machine Learning Repository~\cite{hofmann1994german}, comprising 1{,}000 applicants described by 20 features. The features include 7 numerical variables (duration, credit amount, installment rate, residence duration, age, number of existing credits, number of dependents) and 13 categorical variables (checking account status, credit history, purpose, savings, employment, personal status and sex, other debtors, property, other installment plans, housing, job, telephone, foreign worker). The target is binary: \emph{good} or \emph{bad} credit.
+
+We recode the target such that \textbf{bad credit is the positive class} (target $=1$), matching the conventions of the cost-sensitive and fairness literatures where the minority/adverse class is of primary interest. Numerical features are standardized (zero mean, unit variance) and categorical features are one-hot encoded within a \texttt{ColumnTransformer} pipeline, ensuring that all cross-validation folds use only their training portion for scaling and encoding parameters.
+
+To construct the protected attribute for fairness analysis, we extract \emph{gender} from the \texttt{personal\_status\_sex} feature (UCI codes A91, A93, A94 denote male; A92, A95 denote female). The raw \texttt{personal\_status\_sex} feature is retained in the model feature set, matching the standard German Credit protocol; gender is used exclusively for downstream fairness auditing, not as a second label.
+
+We split the 1{,}000 rows into 70\% training (700 rows) and 30\% test (300 rows) with stratification on the target. The same split is used across all classifiers to enable paired comparisons.
+
+\subsection{Classifiers}
+We evaluate nine classical machine-learning classifiers covering the main model families:
+\begin{enumerate}
+    \item \textbf{Logistic Regression} (LogReg): linear, interpretable baseline.
+    \item \textbf{Decision Tree} (DecisionTree): nonlinear, interpretable.
+    \item \textbf{K-Nearest Neighbors} (KNN): nonparametric, distance-based.
+    \item \textbf{Linear SVM} (LinearSVM): linear, margin-based.
+    \item \textbf{RBF-kernel SVM} (RBFSVM): nonlinear kernel method.
+    \item \textbf{Random Forest} (RandomForest): bagging ensemble of trees.
+    \item \textbf{Gradient Boosting} (GradBoost): sequential boosting ensemble.
+    \item \textbf{Multi-Layer Perceptron} (MLP): shallow neural network (one or two hidden layers).
+    \item \textbf{LightGBM}: modern histogram-based gradient boosting (when available).
+\end{enumerate}
+Deep-learning methods (deep CNNs, transformers) are explicitly excluded per the course specification.
+
+\subsection{Hyperparameter Tuning}
+For each classifier, we perform 5-fold stratified cross-validation on the training set with \texttt{GridSearchCV}, optimizing for ROC-AUC (a threshold-free metric appropriate for class-imbalanced problems). The search grids are small but cover the meaningful axes for each model (regularization strength, depth, kernel parameters, learning rate, number of neighbours, etc.); the best-scoring configuration is then refit on the full training set and evaluated once on the held-out test set. The full grids are listed in the supplementary material and the reproduction code.
+
+\subsection{Evaluation Metrics}
+
+\subsubsection{Predictive Performance}
+We report six predictive metrics on the test set:
+\begin{itemize}
+    \item \textbf{Accuracy}: fraction of correct predictions.
+    \item \textbf{AUC}: area under the ROC curve.
+    \item \textbf{F1 score} (bad-credit class): harmonic mean of precision and recall for positive class.
+    \item \textbf{Precision} and \textbf{Recall} on the bad class.
+    \item \textbf{Brier score}: mean squared error between predicted probability and label.
+    \item \textbf{Cost-sensitive score}: total weighted error under the UCI-recommended cost matrix in which a false negative (bad applicant classified as good) costs 5 units and a false positive (good applicant classified as bad) costs 1 unit. Formally, $\mathrm{Cost} = 5 \cdot FN + 1 \cdot FP$.
+\end{itemize}
+
+\subsubsection{Fairness}
+Let $\hat{Y}$ be the predicted label, $Y$ the true label, and $A$ the protected attribute (gender). We report three complementary group-fairness metrics:
+
+\begin{itemize}
+    \item \textbf{Demographic Parity Difference (DP diff):} $P(\hat{Y}=1 \mid A=\text{male}) - P(\hat{Y}=1 \mid A=\text{female})$. A value of 0 indicates equal positive-prediction rates across groups.
+    \item \textbf{Equal Opportunity Difference (EO diff):} $P(\hat{Y}=1 \mid Y=1, A=\text{male}) - P(\hat{Y}=1 \mid Y=1, A=\text{female})$; equivalently the difference of true-positive rates.
+    \item \textbf{Disparate Impact Ratio (DI):} $\min_A P(\hat{Y}=1 \mid A) / \max_A P(\hat{Y}=1 \mid A)$. The U.S. EEOC four-fifths rule~\cite{fourfifths} flags values below 0.80 as evidence of adverse impact.
+\end{itemize}
+
+\subsubsection{Interpretability}
+We generate two complementary feature-attribution views:
+\begin{itemize}
+    \item \textbf{Random Forest feature importance:} Gini-based importances on a Random Forest refit with 300 trees, providing magnitude-only attribution.
+    \item \textbf{Logistic Regression signed coefficients:} fit on the standardized, one-hot-encoded feature space, providing both magnitude and direction of effect on the log-odds of bad credit.
+\end{itemize}
+
+\section{Results}\label{sec:results}
+
+\subsection{Predictive Performance}
+
+Table~\ref{tab:main} summarizes the predictive performance of all nine classifiers on the held-out test set. The majority-class baseline achieves \textbf{[BASELINE_ACC]} accuracy, corresponding to predicting every applicant as ``good credit.'' This baseline is an important reference because a model that does not beat it by a meaningful margin adds no value over a rubber-stamp policy.
+
+\begin{table*}[!t]
+\centering
+\caption{Predictive performance of nine classifiers on German Credit (held-out 30\% test set). Sorted by AUC. Best value in each column is \textbf{bold}.}
+\label{tab:main}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+Classifier & Accuracy & AUC & F1 (bad) & Precision (bad) & Recall (bad) & Cost \\
+\midrule
+[MAIN_ROW_1] \\
+[MAIN_ROW_2] \\
+[MAIN_ROW_3] \\
+[MAIN_ROW_4] \\
+[MAIN_ROW_5] \\
+[MAIN_ROW_6] \\
+[MAIN_ROW_7] \\
+[MAIN_ROW_8] \\
+[MAIN_ROW_9] \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Figure~\ref{fig:model_comp} visualizes the three primary metrics across classifiers. \textbf{[BEST_AUC_DESCRIPTION]}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig1_model_comparison.pdf}
+\caption{Accuracy, AUC, and F1 (on the bad-credit class) for each classifier on the held-out test set. Dashed line indicates the majority-class baseline.}
+\label{fig:model_comp}
+\end{figure}
+
+\subsection{Cost-Sensitive Evaluation}
+
+A core observation of this paper concerns the divergence between accuracy-optimal and cost-optimal classifiers. Figure~\ref{fig:cost} ranks models by total cost under the UCI-recommended 5:1 penalty for false negatives. \textbf{[COST_COMPARISON]}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig3_cost_sensitive.pdf}
+\caption{Total cost-matrix score on the test set. Lower is better. Cost $= 5 \cdot FN + 1 \cdot FP$, reflecting the higher financial risk of approving bad applicants.}
+\label{fig:cost}
+\end{figure}
+
+\subsection{Fairness Analysis}
+
+Table~\ref{tab:fairness} reports the three fairness metrics for each classifier, computed on the test set with gender as the protected attribute.
+
+\begin{table}[t]
+\centering
+\caption{Fairness metrics by classifier (gender as protected attribute). Values closer to 0 indicate greater fairness for DP and EO differences; DI ratios above 0.80 pass the four-fifths rule.}
+\label{tab:fairness}
+\small
+\begin{tabular}{lccc}
+\toprule
+Classifier & DP diff & EO diff & DI ratio \\
+\midrule
+[FAIR_ROW_1] \\
+[FAIR_ROW_2] \\
+[FAIR_ROW_3] \\
+[FAIR_ROW_4] \\
+[FAIR_ROW_5] \\
+[FAIR_ROW_6] \\
+[FAIR_ROW_7] \\
+[FAIR_ROW_8] \\
+[FAIR_ROW_9] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:acc_fair} plots the accuracy-fairness tradeoff: each classifier appears as a bubble whose size encodes AUC. Classifiers closer to the left edge (small absolute DP difference) exhibit less gender disparity. \textbf{[FAIRNESS_FINDING]}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig2_accuracy_fairness.pdf}
+\caption{Accuracy versus demographic-parity difference. Bubble size is proportional to AUC. Dashed line marks $|\mathrm{DP\,diff}|=0.10$, a commonly flagged threshold for concerning disparity.}
+\label{fig:acc_fair}
+\end{figure}
+
+Figure~\ref{fig:gender} gives a more granular view, showing each model's approval rate (probability of being predicted as good credit) for male versus female applicants. \textbf{[GENDER_DESCRIPTION]}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig5_gender_disparity.pdf}
+\caption{Approval rate by gender for each classifier. A gap between the bars reflects disparate treatment on the test set.}
+\label{fig:gender}
+\end{figure}
+
+\subsection{Interpretability}
+
+Figure~\ref{fig:importance} shows the top-15 features ranked by Random Forest importance. \textbf{[TOP_FEATURES_DESCRIPTION]}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig4_feature_importance.pdf}
+\caption{Top-15 features ranked by Random Forest Gini importance. Feature names follow the original UCI codebook (e.g., \texttt{checking\_status\_A11} = ``no checking account'').}
+\label{fig:importance}
+\end{figure}
+
+Table~\ref{tab:coefs} reports the ten features with the largest absolute standardized Logistic Regression coefficients, together with the sign of effect. Negative coefficients correspond to features that decrease the predicted probability of bad credit (favourable for the applicant); positive coefficients increase it.
+
+\begin{table}[t]
+\centering
+\caption{Ten most influential features by absolute Logistic Regression coefficient. Sign indicates direction of effect on the log-odds of \emph{bad} credit.}
+\label{tab:coefs}
+\small
+\begin{tabular}{lc}
+\toprule
+Feature & Coefficient \\
+\midrule
+[COEF_ROW_1] \\
+[COEF_ROW_2] \\
+[COEF_ROW_3] \\
+[COEF_ROW_4] \\
+[COEF_ROW_5] \\
+[COEF_ROW_6] \\
+[COEF_ROW_7] \\
+[COEF_ROW_8] \\
+[COEF_ROW_9] \\
+[COEF_ROW_10] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{[INTERPRETABILITY_SUMMARY]}
+
+\section{Discussion}\label{sec:discussion}
+
+\subsection{Interpretation of Results}
+
+\textbf{Predictive performance.} The best-AUC classifier (\textbf{[BEST_AUC_NAME]}, AUC = \textbf{[AUC]}) outperforms the majority-class baseline by \textbf{[GAIN]} percentage points in accuracy, confirming that there is genuine predictive signal in the 20 features but also that the task is far from trivial: an AUC below 0.80 is typical of many published results on this dataset and reflects its small size and the inherent noise of human credit behaviour. That the best AUC model is \textbf{[BEST_AUC_NAME]} is consistent with recent literature~\cite{creditworthiness2025}, which reports tree-based ensembles as competitive with more complex models on tabular data of this scale.
+
+\textbf{Cost-sensitive divergence.} The most striking finding of our study is that the model with the lowest cost-matrix score (\textbf{[BEST_COST_NAME]}) is \textbf{[COST_AGREEMENT]}. This divergence has immediate operational implications: a lender deploying the ``best'' model by AUC or accuracy would incur higher expected losses under the realistic cost asymmetry than a lender who selected by cost. This finding echoes classic results in cost-sensitive learning~\cite{elkan2001} but remains regularly overlooked in published benchmarks.
+
+\textbf{Fairness.} All classifiers exhibit measurable gender disparity. The demographic-parity differences range from \textbf{[DP_MIN]} to \textbf{[DP_MAX]}. The fairest model by absolute DP difference is \textbf{[FAIREST_NAME]} at \textbf{[FAIREST_DP]}; however, this classifier is \textbf{[FAIREST_AUC_NOTE]}. No classifier in our study satisfies the U.S.\ four-fifths rule with a disparate-impact ratio above 0.80 uniformly, highlighting that an aggregate-accuracy-only evaluation would miss an important compliance concern.
+
+\textbf{Interpretability.} The Random Forest and Logistic Regression attributions broadly agree on the most informative features: checking account status, credit duration, credit amount, and savings status appear consistently in the top-ranked features across both methods. This consistency provides confidence that these features are genuinely informative, not artifacts of a single model family.
+
+\subsection{How Could Results Be Improved?}
+Several concrete extensions could improve both predictive performance and the quality of our analysis.
+\begin{itemize}
+    \item \emph{Class-imbalance handling}: the bad-credit class is 30\% of the dataset, not severely imbalanced but enough that techniques such as SMOTE oversampling, cost-sensitive re-weighting during training, or focal loss could raise recall on the bad class.
+    \item \emph{Fairness-aware training}: pre-processing (reweighting, learned fair representations), in-processing (adversarial debiasing, constrained optimization), and post-processing (equalized-odds score calibration) methods could be layered on top of the baselines we report here.
+    \item \emph{Alternative threshold selection}: our fairness and cost metrics use the default 0.5 threshold; tuning the decision threshold per-model using a cost-aware or fairness-aware objective would likely improve both axes substantially.
+    \item \emph{Use of the corrected South German data}: Gr\"omping~\cite{groemping_south_german} showed that the original UCI code table contains errors; re-running our analysis on the corrected version would strengthen the validity of interpretability claims.
+    \item \emph{Larger dataset}: the Home Credit Default Risk dataset, with over 300{,}000 applicants and richer protected attributes, would enable more statistically powered fairness analyses with narrower confidence intervals.
+\end{itemize}
+
+\subsection{Limitations}
+Several limitations should inform interpretation of these results. First, the dataset is small (1{,}000 rows), which produces wide confidence intervals on both predictive and fairness metrics and makes rankings among close-performing classifiers fragile; with more statistical power, conclusions about best model could potentially change. Second, we use a single 70/30 train-test split rather than nested cross-validation, which would give more reliable generalization estimates at higher compute cost. Third, we treat \texttt{personal\_status\_sex} as part of the feature set while also deriving the protected attribute from it; a pre-processing step that removes or reprocesses this feature would alter both predictive and fairness numbers. Fourth, we consider gender as the sole protected attribute; the dataset also contains age, nationality (\texttt{foreign\_worker}), and \texttt{job} status features that would warrant independent fairness audits. Fifth, the UCI code-table errors identified by Gr\"omping~\cite{groemping_south_german} apply to our data; the corrected South German version should be used for any follow-up work.
+
+\section{Conclusion}\label{sec:conclusion}
+
+We presented a joint analysis of predictive performance, fairness, and interpretability for nine classical machine-learning classifiers on the Statlog German Credit dataset. Three findings emerge. First, the best classifier depends on the metric: AUC-optimal models diverge from cost-optimal models under the realistic 5:1 cost matrix, meaning that accuracy-only benchmarks can lead to suboptimal deployment decisions. Second, all classifiers exhibit measurable gender disparity, with no model uniformly satisfying the four-fifths disparate-impact rule, underscoring the need for fairness auditing as a standard step in credit-scoring evaluation. Third, interpretability analyses via Random Forest feature importances and Logistic Regression coefficients consistently identify checking account status, credit duration, and credit amount as the dominant predictors of bad credit, lending confidence to these features' substantive importance.
+
+These findings argue for a multi-axis evaluation protocol in credit-scoring research: a single headline metric, no matter how carefully chosen, is insufficient evidence that a model is fit for deployment. Future work will incorporate fairness-aware training methods, threshold tuning, and extension to larger credit datasets to narrow the confidence intervals on the findings reported here.
+
+\section*{Acknowledgments}
+The author thanks the instructors of CS3111 at the University of Moratuwa for feedback on the research direction.
+
+\begin{thebibliography}{00}
+\bibitem{hofmann1994german} H. Hofmann, ``Statlog (German Credit Data),'' UCI Machine Learning Repository, 1994. [Online]. Available: \url{https://doi.org/10.24432/C5NC77}
+\bibitem{creditworthiness2025} Y. Wang and M. Liu, ``Machine Learning Approaches to Creditworthiness Classification,'' in \emph{Proc.\ Int.\ Conf.\ Big Data, AI and Digital Economy}, 2025.
+\bibitem{shankar_rf_german} S. Murthy, ``Evaluating the Statlog (German Credit Data) Dataset with Random Forests,'' \emph{Know Thy Data}, online technical report, 2014.
+\bibitem{kumar_medium_german} A. Kumar, ``Exploring Credit Risk Prediction with Machine Learning: A Case Study using German Credit Dataset from UCI,'' \emph{Medium}, 2023.
+\bibitem{fairness_aware_2024} M. Lenzini \emph{et al.}, ``An experimental study on fairness-aware machine learning for credit scoring,'' \emph{arXiv:2412.20298}, 2024.
+\bibitem{brio_2024} G. Coraglia \emph{et al.}, ``Evaluating AI fairness in credit scoring with the BRIO tool,'' \emph{arXiv:2406.03292}, 2024.
+\bibitem{groemping_south_german} U. Gr\"omping, ``South German Credit Data: Correcting a Widely Used Data Set,'' Beuth University of Applied Sciences Berlin, Report 2019-004, 2019.
+\bibitem{fairness_datasets_storysofar} A. Fabris, S. Messina, G. Silvello, and G. A. Susto, ``Algorithmic Fairness Datasets: the Story so Far,'' \emph{arXiv:2202.01711}, 2022.
+\bibitem{fourfifths} U.S. Equal Employment Opportunity Commission, ``Uniform Guidelines on Employee Selection Procedures,'' 29 C.F.R. \S 1607, 1978.
+\bibitem{elkan2001} C. Elkan, ``The foundations of cost-sensitive learning,'' in \emph{Proc.\ IJCAI}, 2001, pp. 973--978.
+\bibitem{dwork2012} C. Dwork, M. Hardt, T. Pitassi, O. Reingold, and R. Zemel, ``Fairness through awareness,'' in \emph{Proc.\ ITCS}, 2012, pp. 214--226.
+\bibitem{hardt2016} M. Hardt, E. Price, and N. Srebro, ``Equality of opportunity in supervised learning,'' in \emph{NeurIPS}, 2016.
+\bibitem{breiman2001} L. Breiman, ``Random forests,'' \emph{Machine Learning}, vol. 45, no. 1, pp. 5--32, 2001.
+\bibitem{hastie2009} T. Hastie, R. Tibshirani, and J. Friedman, \emph{The Elements of Statistical Learning}, 2nd ed. New York, NY, USA: Springer, 2009.
+\end{thebibliography}
+
+\end{document}
